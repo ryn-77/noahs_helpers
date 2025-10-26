@@ -17,11 +17,13 @@ class ArkRunner:
         num_helpers: int,
         animals: list[int],
         time: int,
+        ark_pos: tuple[int, int],
     ):
         self.player_class = player_class
         self.num_helpers = num_helpers
         self.animals = animals
         self.time = time
+        self.ark_pos = ark_pos
 
     def setup_engine(self) -> Engine:
         self.grid = [[Cell(row, col) for col in range(c.Y)] for row in range(c.X)]
@@ -56,13 +58,11 @@ class ArkRunner:
                 x, y = random.randint(0, c.X - 1), random.randint(0, c.Y - 1)
                 self.grid[y][x].animals.append(animal)
 
-        ark_x = random.randint(0, c.X - 1)
-        ark_y = random.randint(0, c.Y - 1)
-        self.ark_position = (ark_x, ark_y)
+        self.ark = Ark(self.ark_pos)
+
         self.helpers = [
-            self.player_class(ark_x, ark_y) for _ in range(self.num_helpers)
+            self.player_class(id, *self.ark.position) for id in range(self.num_helpers)
         ]
-        self.ark = Ark(ark_x, ark_y)
 
         engine = Engine(self.grid, self.ark, self.helpers, self.time)
 

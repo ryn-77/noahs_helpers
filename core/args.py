@@ -28,6 +28,7 @@ class Args:
     num_helpers: int
     animals: list[int]
     time: int
+    ark: tuple[int, int]
 
 
 PLAYERS = {
@@ -52,6 +53,7 @@ class ParsedNS(Protocol):
     num_helpers: int
     animals: list[str] | None
     T: int
+    ark: tuple[str, str] | None
 
 
 def sanitize_seed(org_seed: None | str) -> int:
@@ -96,6 +98,15 @@ def sanitize_time(org_T: None | int) -> int:
     return org_T
 
 
+def sanitize_ark(org_ark: None | tuple[str, str]) -> tuple[int, int]:
+    if org_ark is None:
+        x, y = random.randint(0, c.X - 1), random.randint(0, c.Y - 1)
+        print(f"generated ark pos={x, y}")
+        return x, y
+
+    return int(org_ark[0]), int(org_ark[1])
+
+
 def parse_args() -> Args:
     parser = argparse.ArgumentParser(description="Run the Noah's helpers simulator.")
 
@@ -128,12 +139,20 @@ def parse_args() -> Args:
     )
     parser.add_argument("--gui", action="store_true", help="Enable GUI")
 
+    parser.add_argument(
+        "--ark",
+        nargs=2,
+        metavar=("X", "Y"),
+        help="Ark position",
+    )
+
     args = cast(ParsedNS, parser.parse_args())
 
     seed = sanitize_seed(args.seed)
     player = sanitize_player(args.player)
     animals = sanitize_animals(args.animals)
     time = sanitize_time(args.T)
+    ark = sanitize_ark(args.ark)
 
     return Args(
         player=player,
@@ -142,4 +161,5 @@ def parse_args() -> Args:
         num_helpers=args.num_helpers,
         animals=animals,
         time=time,
+        ark=ark,
     )

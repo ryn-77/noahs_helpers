@@ -8,7 +8,7 @@ def main():
     args = parse_args()
     random.seed(args.seed)
 
-    runner = ArkRunner(args.player, args.num_helpers, args.animals, args.time)
+    runner = ArkRunner(args.player, args.num_helpers, args.animals, args.time, args.ark)
 
     if args.gui:
         result = runner.run_gui()
