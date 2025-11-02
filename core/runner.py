@@ -26,7 +26,7 @@ class ArkRunner:
         self.ark_pos = ark_pos
 
     def setup_engine(self) -> Engine:
-        self.grid = [[Cell(row, col) for col in range(c.Y)] for row in range(c.X)]
+        self.grid = [[Cell(x, y) for x in range(c.X)] for y in range(c.Y)]
 
         # link neighbouring cells
         for y in range(c.Y):
@@ -56,7 +56,7 @@ class ArkRunner:
             # place animals in random cells
             for animal in group:
                 x, y = random.randint(0, c.X - 1), random.randint(0, c.Y - 1)
-                self.grid[y][x].animals.append(animal)
+                self.grid[y][x].animals.add(animal)
 
         self.ark = Ark(self.ark_pos)
 
