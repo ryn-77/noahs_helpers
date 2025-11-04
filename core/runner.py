@@ -32,10 +32,6 @@ class ArkRunner:
         for y in range(c.Y):
             for x in range(c.X):
                 cell = self.grid[y][x]
-                # if y < c.Y - 1:
-                #     cell.down = self.grid[y + 1][x]
-                # if x < c.X - 1:
-                #     cell.right = self.grid[y][x + 1]
                 if y > 0:
                     cell.up = self.grid[y - 1][x]
                     cell.up.down = cell

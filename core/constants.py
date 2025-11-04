@@ -1,4 +1,4 @@
-X = Y = 50
+X = Y = 100
 
 MAX_ANIMALS_PER_HELPER = 4
 MAX_SIGHT_KM = 5

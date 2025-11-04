@@ -243,6 +243,17 @@ class ArkUI:
                 self.small_font, f"{i}: {flist[i]}", (margined_x + 10, y), align="left"
             )
 
+        y += c.MARGIN_Y
+
+        last_msg = self.engine.last_messages[id]
+        if last_msg is not None:
+            self.write_at(
+                self.small_font,
+                f"Last msg: 0b{last_msg:08b} = {last_msg}",
+                (margined_x, y),
+                align="left",
+            )
+
     def draw_animals(self):
         for animal, cell in self.engine.free_animals.items():
             animal_center = coords_to_px(cell.x, cell.y)
@@ -322,8 +333,6 @@ class ArkUI:
         self.draw_ark()
         self.draw_helpers()
         self.draw_animals()
-
-        self.draw_if_hovered()
 
     def draw_info_panel(self):
         info_pane_x = c.LANDSCAPE_EAST_PX + c.MARGIN_X
@@ -434,6 +443,7 @@ class ArkUI:
             self.draw_objects()
             self.draw_info_panel()
             self.draw_debug_info()
+            self.draw_if_hovered()
 
             self.handle_events()
 

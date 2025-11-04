@@ -29,6 +29,7 @@ class Engine:
         self.free_animals = animals
         self.species_stats = species_stats
         self.time_elapsed = 0
+        self.last_messages: dict[int, int | None] = {h.id: None for h in self.helpers}
 
     def _get_sights(self) -> dict[Player, list[Player]]:
         in_sight: dict[Player, list[Player]] = {helper: [] for helper in self.helpers}
@@ -48,6 +49,7 @@ class Engine:
     def run_turn(self) -> None:
         is_raining = self.is_raining()
         ark_view = self.ark.get_view()
+        self.last_messages.clear()
 
         # 1. show helpers their new surroundings:
         # a their position
@@ -79,6 +81,8 @@ class Engine:
                 raise Exception(
                     f"helper {helper.id} gave incorrect message: {one_byte_message}"
                 )
+
+            self.last_messages[helper.id] = one_byte_message
 
             # broadcast message to all neighbors
             for neighbor in sights[helper]:
