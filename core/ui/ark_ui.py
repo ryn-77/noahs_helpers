@@ -5,7 +5,7 @@ from core.animal import Animal, Gender
 from core.ark import Ark
 from core.engine import Engine
 from core.player import Player
-from core.ui.utils import write_at
+from core.ui.utils import render_img, write_at
 from core.views.player_view import Kind
 
 import core.constants as c
@@ -207,11 +207,7 @@ class ArkUI:
     def draw_ark_on_map(self):
         ark_x, ark_y = self.engine.ark.position
         ark_center = self.map_coords_to_px(ark_x, ark_y)
-
-        ark_img_orig = pygame.image.load("sprites/ark.png").convert_alpha()
-        ark_img = pygame.transform.scale(ark_img_orig, (c.ARK_RADIUS, c.ARK_RADIUS))
-        ark_rect = ark_img.get_rect(center=ark_center)
-        self.screen.blit(ark_img, ark_rect)
+        render_img(self.screen, ark_center, "sprites/ark.png", c.ARK_RADIUS)
 
     def draw_ark(self):
         ark_x, ark_y = self.engine.ark.position
@@ -219,14 +215,7 @@ class ArkUI:
             return
 
         ark_center = self.coords_to_px(ark_x, ark_y)
-
-        ark_img_orig = pygame.image.load("sprites/ark.png").convert_alpha()
-        ark_img = pygame.transform.scale(
-            ark_img_orig, (2.5 * c.ARK_RADIUS, 2.5 * c.ARK_RADIUS)
-        )
-        ark_rect = ark_img.get_rect(center=ark_center)
-        self.screen.blit(ark_img, ark_rect)
-
+        render_img(self.screen, ark_center, "sprites/ark.png", int(2.5 * c.ARK_RADIUS))
         key = (ark_center, c.ARK_RADIUS)
         self.drawn_objects[key] = self.engine.ark
 
@@ -272,9 +261,13 @@ class ArkUI:
         species_in_ark = self.engine.ark.get_species()
 
         y = top + c.MARGIN_Y * 2
-        for sid, (has_male, has_female) in species_in_ark.items():
+        for idx, (sid, (has_male, has_female)) in enumerate(species_in_ark.items()):
             write_at(
-                self.screen, self.small_font, f"{sid}: ", (margined_x, y), align="left"
+                self.screen,
+                self.small_font,
+                f"{chr(sid + ord('a'))}: ",
+                (margined_x, y),
+                align="left",
             )
 
             side = 40
@@ -294,7 +287,11 @@ class ArkUI:
             else:
                 pygame.draw.rect(self.screen, c.FEMALE_ANIMAL_COLOR, female_rect, 2)
 
-            y += 50
+            if idx % 2 == 0:
+                margined_x += 160
+            else:
+                margined_x -= 160
+                y += 50
 
     def draw_helpers_on_map(self):
         for helper in self.engine.helpers:
@@ -380,7 +377,7 @@ class ArkUI:
         write_at(
             self.screen,
             self.small_font,
-            f"species_id: {sid}",
+            f"species_id: {sid} -> {chr(sid + ord('a'))}",
             (margined_x, y),
             align="left",
         )
@@ -424,17 +421,14 @@ class ArkUI:
         self.draw_helpers()
         self.draw_animals()
 
-    def draw_info_panel(self):
-        info_pane_x = c.LANDSCAPE_EAST_PX + 30
-        info_pane_y = c.MARGIN_Y
+    def draw_info_lines(self, x: int, y: int):
+        info_pane_x = x
+        info_pane_y = y
 
         info_lines = [
             f"{self.engine.helpers[0]}",
-            "",
             f"Turn: {self.engine.time_elapsed}/{self.engine.time}",
             f"Helpers: {len(self.engine.helpers)}",
-            f"is_raining: {self.engine.is_raining()}",
-            f"{'DEBUG ON' if self.debug_mode else 'DEBUG OFF'}",  # NEW: Show debug status
             f"Score: {self.engine.ark.get_score()}",
         ]
 
@@ -468,6 +462,10 @@ class ArkUI:
                 color=(255, 0, 0) if deduct else (0, 0, 0),
             )
 
+        return info_pane_x, y
+
+    def draw_animals_helpers(self, x: int, y: int):
+        info_pane_x = x
         y += 40
         base_y = y
 
@@ -555,7 +553,7 @@ class ArkUI:
                 )
                 helper.draw_flock(helpers_surface, self.big_font, (x + 60, y))
 
-            incr_y = y + c.INFO_HELPER_HEIGHT // 2 - 5
+            incr_y = y + c.INFO_HELPER_HEIGHT // 2
 
             msg = self.engine.last_messages[helper.id]
             if msg:
@@ -581,6 +579,26 @@ class ArkUI:
             ),
         )
         self.screen.set_clip(None)
+
+    def draw_raindrop(self):
+        x, y = c.SCREEN_WIDTH - c.MARGIN_X, c.MARGIN_Y
+        if self.engine.is_raining():
+            render_img(self.screen, (x, y), "sprites/raindrop.png", 60)
+
+    def draw_info_panel(self):
+        info_pane_x = c.LANDSCAPE_EAST_PX + 30
+        info_pane_y = c.MARGIN_Y - 10
+
+        x, y = self.draw_info_lines(info_pane_x, info_pane_y)
+        self.draw_animals_helpers(x, y)
+        self.draw_raindrop()
+        write_at(
+            self.screen,
+            self.tiny_font,
+            f"fps: {self.clock.get_fps():.1f}",
+            (c.SCREEN_WIDTH - c.MARGIN_X, c.SCREEN_HEIGHT - c.MARGIN_Y + 10),
+            align="right",
+        )
 
     def draw_debug_helper_screens(self):
         grid = pygame.Rect(
@@ -648,7 +666,7 @@ class ArkUI:
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_SPACE:
                     self.paused = not self.paused
-                elif event.key == pygame.K_d:  # NEW: Toggle debug mode
+                elif event.key == pygame.K_d:
                     self.debug_mode = not self.debug_mode
 
                 elif event.key == pygame.K_RIGHT:
@@ -697,7 +715,7 @@ class ArkUI:
                 self.clock.tick(self.hz)
 
             pygame.display.flip()
-            self.clock.tick(60)
+            self.clock.tick(max(self.hzs))
 
         pygame.quit()
 

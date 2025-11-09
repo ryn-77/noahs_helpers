@@ -26,3 +26,12 @@ def write_at(
             raise Exception(f"invalid value for `align`: {align}")
 
     screen.blit(text, rect)
+
+
+def render_img(
+    screen: pygame.Surface, coord: tuple[int, int], img_path: str, scale: int = 1
+):
+    img_orig = pygame.image.load(img_path).convert_alpha()
+    img = pygame.transform.scale(img_orig, (scale, scale))
+    rect = img.get_rect(center=coord)
+    screen.blit(img, rect)

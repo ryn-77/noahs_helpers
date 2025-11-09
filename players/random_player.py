@@ -85,7 +85,6 @@ class RandomPlayer(Player):
     def get_action(self, messages: list[Message]) -> Action | None:
         for msg in messages:
             if 1 << (msg.from_helper.id % 8) == msg.contents:
-                print(f'{self.id}: got "hello" from {msg.from_helper.id}')
                 self.hellos_received.append(msg.contents)
 
         # noah shouldn't do anything
