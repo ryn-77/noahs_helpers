@@ -1,7 +1,7 @@
 import random
 
 from core.runner import ArkRunner
-from core.args import parse_args
+from core.parse_args import parse_args
 
 
 def main():
