@@ -190,7 +190,7 @@ class Engine:
                 self.free_animals[animal] = neighbor
 
         self.time_elapsed += 1
-        self.times.append(timer)
+        self.times.append(timer.consumed)
         return timer.consumed
 
     def get_results(self) -> tuple[int, list[float]]:
