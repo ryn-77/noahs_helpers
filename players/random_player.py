@@ -19,7 +19,7 @@ class RandomPlayer(Player):
         ark_x: int,
         ark_y: int,
         kind: Kind,
-        num_helpers,
+        num_helpers: int,
         species_populations: dict[str, int],
     ):
         super().__init__(id, ark_x, ark_y, kind, num_helpers, species_populations)

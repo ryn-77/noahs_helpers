@@ -73,17 +73,27 @@ uv run main.py -h
 ##### Example 1: Minimal config
 
 The minimal required flags (listed above) are shown below.
-This will generate a random `T` and a random `--seed`.
+This will run the random player, generate a random `T` and a random `--seed`.
 
 ```bash
 uv run main.py --num_helpers 4 --animals 200 40 5 --ark 20 80 # add `--gui` for visualization
+```
+
+##### Example 1: Run a specific player
+
+To run a specific player, supply the same arguments as above, but include the `--player` flag.
+The `--player` flag accepts either an `r` or a number `1-10`.
+This will run the random player, generate a random `T` and a random `--seed`.
+
+```bash
+uv run main.py --player r --num_helpers 4 --animals 200 40 5 --ark 20 80 # add `--gui` for visualization
 ```
 
 ##### Example 2: Run a Simulator with existing map configs.
 
 Map configurations can be stored as json files under the `maps/` directory.
 If a path is supplied, it must contain exactly the required options specified above and they cannot then be specified as program arguments.
-This will generate a random `T` and a random `--seed`.
+This will run the random player, generate a random `T` and a random `--seed`.
 
 ```bash
 uv run main.py --map_path maps/template/t1.json # add `--gui` for visualization
