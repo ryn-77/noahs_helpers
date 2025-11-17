@@ -29,7 +29,7 @@ class Player1(Player):
     - Otherwise: explore toward open space based on ark position
     """
 
-    MAP_SIZE = 1000.0   # 1000km x 1000km
+    MAP_SIZE = 1000.0  # 1000km x 1000km
     MAX_FLOCK = 4
 
     # Messaging format (1 byte):
@@ -62,7 +62,9 @@ class Player1(Player):
         self._init_species_metadata()
 
         # Ark-known genders for each species: {species: {"M", "F"}}
-        self.ark_known: dict[str, set[str]] = {s: set() for s in self.species_populations}
+        self.ark_known: dict[str, set[str]] = {
+            s: set() for s in self.species_populations
+        }
 
         # Remember helper count for exploration partitioning
         self.num_helpers: int = num_helpers
@@ -325,10 +327,7 @@ class Player1(Player):
         - Use override_dir if a recent sighting.
         - Otherwise use the helper's space-aware base direction.
         """
-        if (
-            self.override_dir is not None
-            and self.turn <= self.override_dir_expire_turn
-        ):
+        if self.override_dir is not None and self.turn <= self.override_dir_expire_turn:
             return self.override_dir
 
         return self.base_explore_dir
@@ -414,8 +413,8 @@ class Player1(Player):
         species_bucket = idx % 16  # 0..15
 
         msg = 0x80  # bit 7 = 1
-        msg |= (dir_bucket << 4)
-        msg |= (species_bucket & 0x0F)
+        msg |= dir_bucket << 4
+        msg |= species_bucket & 0x0F
         return msg & 0xFF
 
     def _decode_sighting(self, msg_val: int) -> tuple[int, int]:
