@@ -14,19 +14,19 @@ from core.views.cell_view import CellView
 
 class Player1(Player):
     """
-    Noah's helper policy with species-aware priorities and 1-byte signaling.
+    new behavior:
+    - helpers explore more toward the most open space (away from  edges)
+    - when an animal is seen in sight radius, immediately get it
 
-    Behavior:
+
     - Message: either
         * HELLO: announce own helper id (for basic presence info), or
         * SIGHTING: encode a high-value species + coarse direction bucket.
     - When it's raining: go straight to the Ark.
     - When carrying animals: go to the Ark to unload.
     - On a cell with animals: obtain the best (rarest / missing-gender) animal.
-    - If animals are in sight: move towards the best animal cell
-      (weighted by rarity + missing ark genders + distance).
-    - Otherwise: explore in a sector based on helper id, but can be overridden
-      by recent high-value sighting messages.
+    - If animals are in sight: move towards the best animal cell (ALWAYS prioritized)
+    - Otherwise: explore toward open space based on ark position
     """
 
     MAP_SIZE = 1000.0   # 1000km x 1000km
@@ -50,11 +50,11 @@ class Player1(Player):
     ):
         super().__init__(id, ark_x, ark_y, kind, num_helpers, species_populations)
 
-        # Basic state
+        # Basic stuff
         self.is_raining: bool = False
         self.hellos_received: list[int] = []
 
-        # Track time ourselves (check_surroundings is called once per turn)
+        # Track time (check_surroundings is called once per turn)
         self.turn: int = 0
 
         # Copy species populations and build rarity info
@@ -66,16 +66,15 @@ class Player1(Player):
 
         # Remember helper count for exploration partitioning
         self.num_helpers: int = num_helpers
-        self._init_exploration_direction()
+        
+        # NEW: Calculate exploration direction based on ark position and available space
+        self._init_space_aware_exploration_direction()
 
-        # Override exploration direction when we get high-value sighting messages
+        # Override exploration direction when see high-value sighting messages
         self.override_dir: tuple[float, float] | None = None
         self.override_dir_expire_turn: int = -1
 
-    # -------------------------------------------------------------------------
-    # Initialization helpers
-    # -------------------------------------------------------------------------
-
+  
     def _init_species_metadata(self) -> None:
         """Precompute rarity-based indices for species."""
         pops = list(self.species_populations.values())
@@ -91,19 +90,59 @@ class Player1(Player):
             s: i for i, s in enumerate(self.species_by_rarity)
         }
 
-    def _init_exploration_direction(self) -> None:
+    def _init_space_aware_exploration_direction(self) -> None:
         """
-        Assign each helper a deterministic exploration direction based on ID.
-
-        We slice the circle into num_helpers wedges and give each helper one.
+        Assign each helper a deterministic exploration direction based on:
+        1. Ark position relative to map center
+        2. Available space in each direction
+        3. Helper ID for distribution
+        
+        Helpers explore toward the most open space (away from map edges).
         """
         if self.kind == Kind.Noah or self.num_helpers <= 0:
             self.base_explore_dir = (0.0, 0.0)
             return
 
+        ark_x, ark_y = self.ark_position
+        map_center = self.MAP_SIZE / 2.0
+
+        if ark_x == map_center and ark_y == map_center:
+            # Ark is in center; explore randomly
+            angle = 2.0 * pi * (self.id / self.num_helpers)
+            self.base_explore_dir = (math.cos(angle), math.sin(angle))
+            return
+        # Calculate distances to each edge from ark
+        dist_to_left = ark_x
+        dist_to_right = self.MAP_SIZE - ark_x
+        dist_to_bottom = ark_y
+        dist_to_top = self.MAP_SIZE - ark_y
+        
+        # Find the direction with the most space
+      
+        # Determine which quadrant has the most total space
+        space_scores = {
+            (1.0, 1.0): dist_to_right + dist_to_top,      # Top-right
+            (1.0, -1.0): dist_to_right + dist_to_bottom,  # Bottom-right
+            (-1.0, 1.0): dist_to_left + dist_to_top,      # Top-left
+            (-1.0, -1.0): dist_to_left + dist_to_bottom   # Bottom-left
+        }
+        
+        # Find the quadrant with maximum space
+        best_quadrant = max(space_scores.keys(), key=lambda k: space_scores[k])
+        
+        # Distribute helpers within the best quadrant(s)
+        # Each helper gets a slightly different angle within the preferred direction
         idx = self.id % self.num_helpers
-        angle = 2.0 * math.pi * (idx / self.num_helpers)
-        self.base_explore_dir = (math.cos(angle), math.sin(angle))
+        
+        # Create a base angle pointing toward the most open space
+        base_angle = atan2(best_quadrant[1], best_quadrant[0])
+        
+        # Spread helpers within a 90-degree cone (pi/2 radians) around the base angle
+        spread = (pi / 2.0) * (idx / max(self.num_helpers - 1, 1)) - (pi / 4.0)
+        final_angle = base_angle + spread
+        
+        self.base_explore_dir = (math.cos(final_angle), math.sin(final_angle))
+        
 
     # -------------------------------------------------------------------------
     # Generic helpers
@@ -112,7 +151,7 @@ class Player1(Player):
     def _on_ark(self) -> bool:
         """Return True if the helper is currently on the Ark cell."""
         xcell, ycell = map(int, self.position)
-        ax, ay = self.ark_position
+        ax, ay = self.ark_position            
         return xcell == ax and ycell == ay
 
     def _normalize_gender(self, gender) -> str | None:
@@ -126,10 +165,6 @@ class Player1(Player):
             return "F"
         return None
 
-    # -------------------------------------------------------------------------
-    # Ark info handling
-    # -------------------------------------------------------------------------
-
     def _sync_ark_info(self, snapshot: HelperSurroundingsSnapshot) -> None:
         """
         Attempt to refresh ark_known from snapshot.
@@ -142,8 +177,8 @@ class Player1(Player):
             ark_animals = getattr(snapshot, "ark_contents", None)
 
         if ark_animals is None:
-            # We cannot see the actual ark content via snapshot; fall back on
-            # whatever we have inferred so far (delivered animals, etc.).
+            # cannot see the actual ark content via snapshot; fall back on
+            # whatever have inferred so far (delivered animals, etc.).
             return
 
         for a in ark_animals:
@@ -153,9 +188,6 @@ class Player1(Player):
                 continue
             self.ark_known.setdefault(species, set()).add(gender)
 
-    # -------------------------------------------------------------------------
-    # Perception helpers
-    # -------------------------------------------------------------------------
 
     def _get_my_cell(self) -> CellView:
         """Return the CellView corresponding to the helper's current position."""
@@ -210,7 +242,8 @@ class Player1(Player):
 
     def _find_best_animal_cell(self) -> tuple[int, int] | None:
         """
-        Find the best cell to chase based on species interest and distance.
+        NEW: Find the best cell to chase based on species interest and distance.
+        Now ALWAYS returns the closest animal if any are visible, prioritizing capture.
 
         Returns:
             (x, y) of the chosen cell, or None if no animals are in sight.
@@ -223,13 +256,19 @@ class Player1(Player):
             if not cellview.animals:
                 continue
 
+            # Get base interest for this cell
             base_interest = self._cell_interest(cellview)
+            
+            # Even if interest is low, still want to check animals
+            # Give minimum interest of 0.1 to any cell with animals
             if base_interest <= 0.0:
-                continue
+                base_interest = 0.1
 
             dist = hypot(my_x - cellview.x, my_y - cellview.y)
-            # Prefer closer cells when interest is similar
-            score = base_interest / (1.0 + dist)
+            
+            # NEW: Heavily weight closer animals to prioritize immediate capture
+            # Distance penalty is much stronger now
+            score = base_interest / (0.1 + dist)
 
             if best_score is None or score > best_score:
                 best_score = score
@@ -237,9 +276,17 @@ class Player1(Player):
 
         return best_pos
 
-    # -------------------------------------------------------------------------
-    # Movement helpers
-    # -------------------------------------------------------------------------
+    def _any_animals_in_sight(self) -> bool:
+        """
+        NEW: Quick check if there are any animals visible in sight radius.
+        
+        Returns:
+            bool: True if at least one animal is visible
+        """
+        for cellview in self.sight:
+            if cellview.animals:
+                return True
+        return False
 
     def _get_random_move(self, max_tries: int = 32) -> tuple[float, float]:
         """
@@ -275,8 +322,8 @@ class Player1(Player):
     def _get_exploration_direction(self) -> tuple[float, float]:
         """
         Decide which direction to explore:
-        - Use override_dir if we have a recent sighting.
-        - Otherwise use the helper's base sector direction.
+        - Use override_dir if a recent sighting.
+        - Otherwise use the helper's space-aware base direction.
         """
         if (
             self.override_dir is not None
@@ -290,10 +337,12 @@ class Player1(Player):
         """
         Move roughly along this helper's exploration direction, staying within
         the map and falling back to a random move if blocked.
+        
+        NEW: Uses space-aware direction that accounts for ark position.
         """
         dir_x, dir_y = self._get_exploration_direction()
 
-        # If we don't have a meaningful exploration direction, just wander randomly.
+        # If no have a meaningful exploration direction, just wander randomly.
         if (dir_x, dir_y) == (0.0, 0.0):
             return self._get_random_move()
 
@@ -311,10 +360,6 @@ class Player1(Player):
 
         # If blocked, try a random move instead
         return self._get_random_move()
-
-    # -------------------------------------------------------------------------
-    # Animal-selection helpers
-    # -------------------------------------------------------------------------
 
     def _choose_best_animal_in_cell(self, cellview: CellView):
         """
@@ -336,15 +381,11 @@ class Player1(Player):
                 best_val = val
                 best_animal = animal
 
-        # Fallback if we couldn't compute a value for some reason
+        # Fallback if couldn't compute a value for some reason
         if best_animal is None and cellview.animals:
             best_animal = choice(tuple(cellview.animals))
 
         return best_animal
-
-    # -------------------------------------------------------------------------
-    # Messaging helpers
-    # -------------------------------------------------------------------------
 
     def _encode_hello(self) -> int:
         """Encode a HELLO message with own helper id mod 8."""
@@ -397,7 +438,7 @@ class Player1(Player):
         """
         Using current sight, find a high-value (species, x, y) to advertise.
 
-        We choose a cell with at least one animal of a species that is:
+    choose a cell with at least one animal of a species that is:
         - not yet fully represented on the ark
         - and/or rare.
         """
@@ -415,7 +456,7 @@ class Player1(Player):
                 if species is None:
                     continue
 
-                # Use species interest without gender (we can't see gender at distance)
+                # Use species interest without gender (can't see gender at distance)
                 interest = self._species_interest(species, gender=None)
                 if best_score is None or interest > best_score:
                     best_score = interest
@@ -436,7 +477,7 @@ class Player1(Player):
         """
         Build outgoing message for this turn.
 
-        - If we see a high-value sighting: send SIGHTING.
+        - If  a high-value sighting: send SIGHTING.
         - Otherwise, send HELLO.
         """
         sighting = self._find_best_high_value_sighting_in_view()
@@ -451,9 +492,6 @@ class Player1(Player):
 
         return msg
 
-    # -------------------------------------------------------------------------
-    # Main interface required by simulator
-    # -------------------------------------------------------------------------
 
     def check_surroundings(self, snapshot: HelperSurroundingsSnapshot) -> int:
         """
@@ -476,7 +514,16 @@ class Player1(Player):
 
     def get_action(self, messages: list[Message]) -> Action | None:
         """
-        Decide the next action based on:
+        Decide the next action with priority given to visible animals.
+        
+        Action priority:
+        1. If raining: return to ark
+        2. If carrying animals: return to ark
+        3. If on cell with animals: obtain best animal
+        4. IF ANY ANIMALS IN SIGHT: chase the closest/best one (NEW - HIGHEST PRIORITY)
+        5. Otherwise: explore toward open space
+        
+        Based on:
         - Received messages
         - Weather (raining)
         - Current flock and surroundings
@@ -499,7 +546,7 @@ class Player1(Player):
                     continue
 
                 # If the species is still not fully represented on the ark,
-                # bias our exploration in that direction for some turns.
+                # bias exploration in that direction for some turns.
                 genders = self.ark_known.get(species, set())
                 if len(genders) < 2:
                     dir_vec = self._direction_from_bucket(dir_bucket)
@@ -515,21 +562,22 @@ class Player1(Player):
         if self.is_raining:
             return Move(*self.move_towards(*self.ark_position))
 
-        # If we are carrying animals, prioritize getting them to the Ark
+        # if carrying animals, prioritize getting them to the Ark
         if not self.is_flock_empty():
             return Move(*self.move_towards(*self.ark_position))
 
-        # If we're on top of any animals, try to obtain the best one
+        # If  on top of any animals, try to obtain the best one
         cellview = self._get_my_cell()
         if cellview.animals and len(self.flock) < self.MAX_FLOCK:
             best_animal = self._choose_best_animal_in_cell(cellview)
             if best_animal is not None:
                 return Obtain(best_animal)
 
-        # If we see any animals, move towards the best (rarity- and ark-aware) cell
+        # If see ANY animals in sight, immediately chase them
+        # This is now the highest priority after obtaining animals in current cell
         best_cell_pos = self._find_best_animal_cell()
         if best_cell_pos is not None:
             return Move(*self.move_towards(*best_cell_pos))
 
-        # Otherwise, explore using sector / sighting-biased direction
+        # Otherwise, explore using space-aware direction
         return Move(*self._get_exploration_move())
