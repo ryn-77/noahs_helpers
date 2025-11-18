@@ -150,10 +150,6 @@ class Engine:
 
                     placed = self.animals[a]
 
-                    print(
-                        f"{hi.get_long_name()} trying to pick up {a}, placed={placed}"
-                    )
-
                     match placed:
                         case Cell() as cell:
                             if cell != helper_cell or a not in helper_cell.animals:

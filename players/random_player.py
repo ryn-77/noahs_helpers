@@ -69,7 +69,7 @@ class RandomPlayer(Player):
         self.is_raining = snapshot.is_raining
 
         # if I didn't receive any messages, broadcast "hello"
-        # a "hello" message is the
+        # a "hello" message is when a player's id bit is set
         if len(self.hellos_received) == 0:
             msg = 1 << (self.id % 8)
         else:
