@@ -1,3 +1,7 @@
+"""
+Define local constants in ./_constants.py
+"""
+
 X = Y = 1000
 
 MAX_ANIMALS_PER_HELPER = 4
