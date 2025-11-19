@@ -1,6 +1,6 @@
-from random import random, choice
+from random import random
 import math
-from math import hypot, atan2, pi
+from math import atan2, pi
 
 from core.action import Action, Move, Obtain
 from core.message import Message
@@ -223,7 +223,6 @@ class Player1(Player):
         )
 
         best_quadrant = sorted_spaces[0][0]
-        second_best_quadrant = sorted_spaces[1][0]
 
         idx = self.id % self.num_helpers
         # if sorted_spaces[0][1] < 1.5 * sorted_spaces[1][1]:
