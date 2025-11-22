@@ -1,14 +1,15 @@
 import math
-from random import random, uniform
+from random import uniform
 
-W, H = 1000, 1000 # we can assume the board size
+W, H = 1000, 1000  # we can assume the board size
+
 
 def ray_boundary_distance(px, py, theta):
     dx = math.cos(theta)
     dy = math.sin(theta)
 
-    tx = float('inf')
-    ty = float('inf')
+    tx = float("inf")
+    ty = float("inf")
 
     if dx > 0:
         tx = (W - px) / dx
@@ -32,7 +33,7 @@ def area_until(px, py, theta, steps=500):
         t = theta * i / steps
         r = ray_boundary_distance(px, py, t)
         dtheta = t - last_theta
-        total += 0.5 * (r*r + last_r*last_r) * dtheta * 0.5
+        total += 0.5 * (r * r + last_r * last_r) * dtheta * 0.5
         last_r = r
         last_theta = t
 
@@ -57,6 +58,7 @@ def equal_area_angles(px, py, n):
     for k in range(1, n):
         out.append(find_theta_for_area(px, py, k * seg_area))
     return out
+
 
 def random_point_in_segment(px, py, a0, a1) -> tuple[float, float]:
     theta = uniform(a0, a1)

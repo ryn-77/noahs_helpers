@@ -11,7 +11,7 @@ from core.views.cell_view import CellView
 from core.animal import Animal, Gender
 from core import constants
 
-from .search_area import *
+from .search_area import equal_area_angles, random_point_in_segment
 
 W, H = 1000, 1000
 
@@ -47,20 +47,19 @@ class Player1(Player):
         self.max_chase_turns = 5
         if self.id == 0:
             return
-        out = equal_area_angles(ark_x, ark_y, num_helpers-1)
+        out = equal_area_angles(ark_x, ark_y, num_helpers - 1)
         if self.id == 1:
             self.begin_angle = 0.0
             self.end_angle = out[0]
         elif self.id == num_helpers - 1:
             self.begin_angle = out[-1]
-            self.end_angle = 2*pi
+            self.end_angle = 2 * pi
         else:
             self.begin_angle = out[id - 2]
             self.end_angle = out[id - 1]
         print(self.begin_angle, self.end_angle)
         self.visited = set[tuple[int, int]]
         self.target_pos = (ark_x, ark_y)
-        
 
     def _get_my_cell(self) -> CellView:
         xcell, ycell = tuple(map(int, self.position))
@@ -255,13 +254,15 @@ class Player1(Player):
 
         self.base_explore_dir = (math.cos(final_angle), math.sin(final_angle))
         return self.base_explore_dir
-    
+
     # A sort-of random walk. But it's not working 100%
     def _meander_in_segment(self) -> tuple[float, float]:
         current_pos = self.position
         if current_pos == self.target_pos:
             print(f"{self.id} meandered to {current_pos}...")
-            self.target_pos = random_point_in_segment(current_pos[0], current_pos[1], self.begin_angle, self.end_angle)
+            self.target_pos = random_point_in_segment(
+                current_pos[0], current_pos[1], self.begin_angle, self.end_angle
+            )
             print(f"{self.id} will now meander to {self.target_pos}...")
         return self.target_pos
 
@@ -320,7 +321,9 @@ class Player1(Player):
         if self.escaping_wall:
             return Move(*self.move_towards(*self.ark_position))
         if self._is_near_wall():
-            print(f"{self.id} near wall, initiating escape") # just reflect off the wall
+            print(
+                f"{self.id} near wall, initiating escape"
+            )  # just reflect off the wall
             self.escaping_wall = True
             return Move(*self.move_towards(*self.ark_position))
 
