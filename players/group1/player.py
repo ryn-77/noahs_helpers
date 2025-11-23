@@ -11,10 +11,6 @@ from core.views.cell_view import CellView
 from core.animal import Animal, Gender
 from core import constants
 
-from .search_area import equal_area_angles, random_point_in_segment
-
-W, H = 1000, 1000
-
 
 def distance(x1: float, y1: float, x2: float, y2: float) -> float:
     return (abs(x1 - x2) ** 2 + abs(y1 - y2) ** 2) ** 0.5
@@ -31,6 +27,7 @@ class Player1(Player):
         species_populations: dict[str, int],
     ):
         super().__init__(id, ark_x, ark_y, kind, num_helpers, species_populations)
+        # print(f"I am {self}")
 
         self.is_raining = False
         self.escaping_wall: bool = False
@@ -45,21 +42,35 @@ class Player1(Player):
         self.target_animal: Animal | None = None
         self.turns_chasing_target = 0
         self.max_chase_turns = 5
-        if self.id == 0:
-            return
-        out = equal_area_angles(ark_x, ark_y, num_helpers - 1)
-        if self.id == 1:
-            self.begin_angle = 0.0
-            self.end_angle = out[0]
-        elif self.id == num_helpers - 1:
-            self.begin_angle = out[-1]
-            self.end_angle = 2 * pi
-        else:
-            self.begin_angle = out[id - 2]
-            self.end_angle = out[id - 1]
-        print(self.begin_angle, self.end_angle)
-        self.visited = set[tuple[int, int]]
-        self.target_pos = (ark_x, ark_y)
+
+        # Corner mission state
+        self.corner_mission_active = False
+        self.corner_mission_done = False  # once we've reached the corner, this stays True
+        self.corner_cells: list[tuple[int, int]] = []
+        self.corner_idx: int = 0
+
+        # --- Corner exploration mission setup ---
+
+        # List of all 4 corner cells
+        if self.kind != Kind.Noah and self.num_helpers > 0:
+            all_corners: list[tuple[int, int]] = [
+                (0, 0),
+                (0, 999),
+                (999, 0),
+                (999, 999),
+            ]
+
+            num_corner_helpers = min(4, self.num_helpers)
+
+            # Make helper indices 0..num_helpers-1 instead of using the raw id
+            helper_index = (self.id - 1) % self.num_helpers
+
+            if helper_index < num_corner_helpers:
+                cx, cy = all_corners[helper_index]
+                self.corner_cells = [(cx, cy)]
+                self.corner_idx = 0
+                self.corner_mission_active = True
+                # print(f"Helper {self.id} assigned corner {cx, cy}")
 
     def _get_my_cell(self) -> CellView:
         xcell, ycell = tuple(map(int, self.position))
@@ -67,6 +78,34 @@ class Player1(Player):
             raise Exception(f"{self} failed to find own cell")
 
         return self.sight.get_cellview_at(xcell, ycell)
+
+    def _do_corner_mission_move(self) -> Move | None:
+        if not self.corner_mission_active:
+            return None
+
+        if self.corner_idx >= len(self.corner_cells):
+            self.corner_mission_active = False
+            return None
+
+        target_cell_x, target_cell_y = self.corner_cells[self.corner_idx]
+        cur_cell_x, cur_cell_y = int(self.position[0]), int(self.position[1])
+
+        # If we've reached the target corner cell
+        if (cur_cell_x, cur_cell_y) == (target_cell_x, target_cell_y):
+            self.corner_idx += 1
+
+            # Mission finished: behave like a normal helper starting from the corner
+            if self.corner_idx >= len(self.corner_cells):
+                self.corner_mission_active = False
+                self.corner_mission_done = True  # permanently mark as "corner-started"
+                return None
+
+            # Otherwise, set next corner target (if you ever add more than one)
+            target_cell_x, target_cell_y = self.corner_cells[self.corner_idx]
+
+        # Move toward center of current target cell
+        tx, ty = target_cell_x + 0.5, target_cell_y + 0.5
+        return Move(*self.move_towards(tx, ty))
 
     def _update_ark_memory(self):
         self.ark_memory = {}
@@ -82,17 +121,16 @@ class Player1(Player):
         self.last_ark_visit_turn = self.current_turn
 
     def _is_animal_needed(self, species, gender) -> bool:
-        # Check other helper memories
         for animals in self.ark_memory:
             if animals == species and gender in self.ark_memory[animals]:
-                print(f"{self.id} does not need {animals} SHOULD MOVE ON")
+                # print(f"{self.id} does not need {animals} SHOULD MOVE ON")
                 return False
         return True
 
     def _already_have_in_flock(self, species, gender) -> bool:
         for animal in self.flock:
             if animal.species_id == species and animal.gender == gender:
-                print(f"{self.id} already has {animal} in flock SHOULD MOVE ON")
+                # print(f"{self.id} already has {animal} in flock SHOULD MOVE ON")
                 return True
         return False
 
@@ -188,6 +226,28 @@ class Player1(Player):
             x <= margin or y <= margin or x >= 1000.0 - margin or y >= 1000.0 - margin
         )
 
+    def _get_inward_from_wall_target(self, margin: float = 20.0) -> tuple[float, float]:
+        """
+        For corner helpers (corner_mission_done=True), when near the wall,
+        move them a bit inward into the map instead of back to the ark.
+        """
+        x, y = self.position
+        target_x, target_y = x, y
+
+        if x <= margin:
+            target_x = margin + 20.0
+        elif x >= 1000.0 - margin:
+            target_x = 1000.0 - margin - 20.0
+
+        if y <= margin:
+            target_y = margin + 20.0
+        elif y >= 1000.0 - margin:
+            target_y = 1000.0 - margin - 20.0
+
+        target_x = min(max(target_x, 0.0), 999.9)
+        target_y = min(max(target_y, 0.0), 999.9)
+        return target_x, target_y
+
     def _is_safely_away_from_wall(self, safe_margin: float = 100.0) -> bool:
         x, y = self.position
         return (
@@ -197,11 +257,8 @@ class Player1(Player):
 
     def _get_away_from_wall_move(self) -> tuple[float, float]:
         target_x, target_y = self.ark_position
-        # Try the movement
         if self.can_move_to(target_x, target_y):
             return target_x, target_y
-
-        # Fallback if blocked
         return self.position[0] + 1, self.position[1] + 1
 
     def _get_random_move(self) -> tuple[float, float]:
@@ -214,6 +271,31 @@ class Player1(Player):
         return old_x + dx, old_y + dy
 
     def _get_move_direction(self) -> tuple[float, float]:
+        # Special exploration direction for helpers that started in a corner:
+        # push them diagonally inward instead of using the ark-based spread.
+        if self.corner_mission_done and self.corner_cells:
+            cx, cy = self.corner_cells[0]
+            inv_sqrt2 = math.sqrt(0.5)
+
+            if cx == 0 and cy == 0:
+                # top-left corner -> down-right
+                self.base_explore_dir = (inv_sqrt2, inv_sqrt2)
+            elif cx == 0 and cy == 999:
+                # bottom-left corner -> up-right
+                self.base_explore_dir = (inv_sqrt2, -inv_sqrt2)
+            elif cx == 999 and cy == 0:
+                # top-right corner -> down-left
+                self.base_explore_dir = (-inv_sqrt2, inv_sqrt2)
+            elif cx == 999 and cy == 999:
+                # bottom-right corner -> up-left
+                self.base_explore_dir = (-inv_sqrt2, -inv_sqrt2)
+            else:
+                # Fallback, should not happen with pure corners
+                self.base_explore_dir = (inv_sqrt2, inv_sqrt2)
+
+            return self.base_explore_dir
+
+        # Original logic for non-corner helpers
         if self.kind == Kind.Noah or self.num_helpers <= 0:
             self.base_explore_dir = (0.0, 0.0)
             return self.base_explore_dir
@@ -254,17 +336,6 @@ class Player1(Player):
 
         self.base_explore_dir = (math.cos(final_angle), math.sin(final_angle))
         return self.base_explore_dir
-
-    # A sort-of random walk. But it's not working 100%
-    def _meander_in_segment(self) -> tuple[float, float]:
-        current_pos = self.position
-        if current_pos == self.target_pos:
-            print(f"{self.id} meandered to {current_pos}...")
-            self.target_pos = random_point_in_segment(
-                current_pos[0], current_pos[1], self.begin_angle, self.end_angle
-            )
-            print(f"{self.id} will now meander to {self.target_pos}...")
-        return self.target_pos
 
     def _get_angled_move(self) -> tuple[float, float]:
         dir_x, dir_y = self._get_move_direction()
@@ -309,61 +380,95 @@ class Player1(Player):
         return msg
 
     def get_action(self, messages: list[Message]) -> Action | None:
+        # Process messages
         for msg in messages:
             self._update_from_message(msg.contents, self.current_turn)
-        if self.position == self.ark_position:
-            self.escaping_wall = False
+
+        # Noah never moves
         if self.kind == Kind.Noah:
             return None
 
+        # If we're on the ark, cancel any wall-escape state
+        if self.position == self.ark_position:
+            self.escaping_wall = False
+
+        # Rain emergency overrides everything
         if self.is_raining:
             return Move(*self.move_towards(*self.ark_position))
-        if self.escaping_wall:
-            return Move(*self.move_towards(*self.ark_position))
-        if self._is_near_wall():
-            print(
-                f"{self.id} near wall, initiating escape"
-            )  # just reflect off the wall
-            self.escaping_wall = True
-            return Move(*self.move_towards(*self.ark_position))
 
+        # --- Corner mission movement has highest priority ---
+        if self.corner_mission_active:
+            corner_move = self._do_corner_mission_move()
+            if corner_move is not None:
+                return corner_move
+            # If mission finished inside _do_corner_mission_move(),
+            # corner_mission_active will be False and corner_mission_done may now be True.
+
+        # --- Wall handling ---
+        if self.corner_mission_done:
+            # Special rule ONLY for corner helpers: stay away from wall, but don't go to ark
+            if self._is_near_wall():
+                tx, ty = self._get_inward_from_wall_target()
+                return Move(*self.move_towards(tx, ty))
+        else:
+            # ORIGINAL wall-escape behavior for non-corner helpers
+            if self.escaping_wall:
+                return Move(*self.move_towards(*self.ark_position))
+
+            if self._is_near_wall():
+                # print(f"{self.id} near wall, initiating escape")
+                self.escaping_wall = True
+                return Move(*self.move_towards(*self.ark_position))
+
+        # If we weren't near the wall (or are a corner helper away from wall), reset escape state
+        if not self._is_near_wall():
+            self.escaping_wall = False
+
+        # ------------------------------------------------------------------
+        # From here on: normal behavior (chasing / obtaining / exploring)
+        # ------------------------------------------------------------------
+
+        # Flock full: go home
         if len(self.flock) >= constants.MAX_FLOCK_SIZE:
             self.target_animal = None
             self.turns_chasing_target = 0
-            return Move(*self.move_towards(*self.ark_position))
+            action = Move(*self.move_towards(*self.ark_position))
         else:
             best_animal = self._find_best_animal()
             if best_animal is not None and id(best_animal) not in self.seen_animals:
                 if self.turns_chasing_target == self.max_chase_turns:
-                    print(
-                        f"{self.id} giving up on {best_animal} after {self.max_chase_turns} turns"
-                    )
+                    # print(
+                    #     f"{self.id} giving up on {best_animal} after {self.max_chase_turns} turns"
+                    # )
                     self.seen_animals.add(id(best_animal))
                     self.target_animal = None
                     self.turns_chasing_target = 0
-                    new_x, new_y = self._meander_in_segment()
-                    return Move(*self._get_angled_move())
+                    action = Move(*self._get_angled_move())
+                else:
+                    best_animal_pos = self._find_animal_position(best_animal)
+                    if best_animal_pos is not None:
+                        cell_x, cell_y = int(best_animal_pos[0]), int(best_animal_pos[1])
+                        my_cell_x, my_cell_y = int(self.position[0]), int(self.position[1])
 
-                best_animal_pos = self._find_animal_position(best_animal)
-                if best_animal_pos is not None:
-                    cell_x, cell_y = int(best_animal_pos[0]), int(best_animal_pos[1])
-                    my_cell_x, my_cell_y = int(self.position[0]), int(self.position[1])
-
-                    if cell_x == my_cell_x and cell_y == my_cell_y:
-                        self.seen_animals.add(id(best_animal))
-                        # self.known_pairs.add((str(best_animal.species_id), best_animal.gender))
-                        # self.target_animal = None
-                        # self.turns_chasing_target = 0
-                        print(f"{self.id} obtaining {best_animal}")
-                        return Obtain(best_animal)
+                        if cell_x == my_cell_x and cell_y == my_cell_y:
+                            self.seen_animals.add(id(best_animal))
+                            # print(f"{self.id} obtaining {best_animal}")
+                            action = Obtain(best_animal)
+                        else:
+                            # print(
+                            #     f"{self.id} moving toward {best_animal} "
+                            #     f"(turn {self.turns_chasing_target}/{self.max_chase_turns})"
+                            # )
+                            self.turns_chasing_target += 1
+                            action = Move(*self.move_towards(*best_animal_pos))
                     else:
-                        print(
-                            f"{self.id} moving toward {best_animal} (turn {self.turns_chasing_target}/{self.max_chase_turns})"
-                        )
-                        self.turns_chasing_target += 1
-                        return Move(*self.move_towards(*best_animal_pos))
-                self.target_animal = None
-                self.turns_chasing_target = 0
+                        self.target_animal = None
+                        self.turns_chasing_target = 0
+                        action = Move(*self._get_angled_move())
+            else:
+                new_x, new_y = self._get_angled_move()
+                # if self.id == 6:
+                #     print(f"{self.id} exploring to ({new_x:.2f}, {new_y:.2f})")
+                action = Move(new_x, new_y)
 
-            new_pos = self._meander_in_segment()
-            return Move(*self.move_towards(new_pos[0], new_pos[1]))
+        return action
