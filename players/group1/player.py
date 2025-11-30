@@ -224,9 +224,7 @@ class Player1(Player):
 
     def _update_from_message(self, msg_content: int, msg_timestamp_hint: int):
         """Merge another helper's ark memory into ours if newer."""
-        species_idx, genders, msg_time_bits = self._decode_memory_message(
-            msg_content
-        )
+        species_idx, genders, msg_time_bits = self._decode_memory_message(msg_content)
 
         if species_idx >= len(self.species_list):
             return
@@ -286,7 +284,10 @@ class Player1(Player):
                     continue
                 key = (x + dx, y + dy, species)
                 t = self.checked_animals.get(key)
-                if t is not None and self.current_turn - t < CHECKED_ANIMAL_EXPIRY_TURNS:
+                if (
+                    t is not None
+                    and self.current_turn - t < CHECKED_ANIMAL_EXPIRY_TURNS
+                ):
                     return True
         return False
 
@@ -311,9 +312,8 @@ class Player1(Player):
                 gender = animal.gender
 
                 # Avoid repeatedly visiting useless unknowns
-                if (
-                    gender == Gender.Unknown
-                    and self._was_animal_checked_nearby(cellview.x, cellview.y, species)
+                if gender == Gender.Unknown and self._was_animal_checked_nearby(
+                    cellview.x, cellview.y, species
                 ):
                     continue
 
