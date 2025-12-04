@@ -53,7 +53,9 @@ class IndependentPlayer(Player):
         self.current_snapshot = None
         self.forced_return = False
         self.rain_start_turn: int | None = None
-        self.flock_limit: int = 2
+        self.flock_limit: int = int(
+            max(1, min(4, 1 + len(species_populations) // num_helpers))
+        )
 
         # Animal hunting state
         self.discovery_position = None  # Position where we discovered the animal
@@ -322,6 +324,35 @@ class IndependentPlayer(Player):
             # Immediately return to ark, no other actions
             return self._return_to_ark(snapshot)
 
+        dist_ark = hypot(
+            current_x - self.ark_position[0], current_y - self.ark_position[1]
+        )
+
+        if self.rain_start_turn and dist_ark > 997 - (
+            self.current_snapshot.time_elapsed - self.rain_start_turn
+        ):
+            return Move(*self.move_towards(*self.ark_position))  # Safeguard
+
+        # if(self.current_snapshot.is_raining and (current_y !=  self.ark_position[1] or current_x != self.ark_position[0])):
+        #    print(self.id, at_ark, current_x, current_y, self.forced_return)
+
+        # Priority 0 (HIGHEST): If forced to return due to time, override all other behaviors
+        # This ensures all helpers return to ark before deadline
+        if self.forced_return:
+            # Cancel any hunting state
+            if self.state in ("hunting", "returning_to_discovery"):
+                self.state = "returning"
+                self.target_animal_cell = None
+                self.target_species_id = None
+                self.discovery_position = None
+                self.previous_state = None
+
+            # Force returning state
+            self.state = "returning"
+
+            # Immediately return to ark, no other actions
+            return self._return_to_ark(snapshot)
+
         # Priority 1: Release animals that ark already has (to free space)
         if len(self.flock) > 0:
             for animal in list(self.flock):
@@ -547,11 +578,11 @@ class IndependentPlayer(Player):
             # Don't hunt if target is too close to where we recently hunted
             # (avoid getting stuck in hunt-fail-hunt loop at same location)
             if target_cell is not None and self.last_hunt_position is not None:
-                if self.turns_since_last_hunt < 20:  # Within last 20 turns
+                if self.turns_since_last_hunt < 10:  # Within last 20 turns
                     last_x, last_y = self.last_hunt_position
                     target_x, target_y = target_cell
                     distance_to_last = hypot(target_x - last_x, target_y - last_y)
-                    if distance_to_last < 10:  # Within 10 cells of last hunt location
+                    if distance_to_last < 5:  # Within 10 cells of last hunt location
                         target_cell = None  # Skip this hunt
 
             if target_cell is not None:
@@ -593,18 +624,17 @@ class IndependentPlayer(Player):
         # Priority 6: If no animals in sight, continue exploring or returning
         if self.state == "exploring":
             return self._explore(snapshot, messages)
-        elif self.state == "returning":
+        else:
             return self._return_to_ark(snapshot)
 
-        return None
-
     # near edge
-    def _near_edge(self, x: int, y: int, angle: float) -> float:
+    def _near_edge(self, x: float, y: float, angle: float) -> float:
         new_x = x + 2 * cos(radians(angle))
         new_y = y + 2 * sin(radians(angle))
 
         if new_x <= 0 or new_x >= self.w or new_y <= 0 or new_y >= self.h:
             return True
+        return False
 
     def _explore(self, snapshot: HelperSurroundingsSnapshot, messages) -> Action | None:
         # if a helper is messaging their ID, find their current location and save to move away from it later, in progress
@@ -766,9 +796,12 @@ class IndependentPlayer(Player):
                 target_y = current_y + dy * scale
 
         # Check if we can move to target using the same distance formula as can_move_to
-        if self.can_move_to(target_x, target_y) and self._dist_to_ark(
-            target_x, target_y
-        ) < self._get_available_turns(self.current_snapshot):
+        if (
+            self.current_snapshot
+            and self.can_move_to(target_x, target_y)
+            and self._dist_to_ark(target_x, target_y)
+            < self._get_available_turns(self.current_snapshot)
+        ):
             return Move(*self.move_towards(target_x, target_y))
 
         # If normal check failed but we're forced to return, try moving directly anyway
@@ -997,7 +1030,7 @@ class IndependentPlayer(Player):
         if self.rain_start_turn is not None:
             # Rain has started - we know exactly how much time remains
             turns_since_rain = snapshot.time_elapsed - self.rain_start_turn
-            return max(0, 0.99 * (c.START_RAIN - turns_since_rain))
+            return int(max(0, 0.99 * (c.START_RAIN - turns_since_rain)))
 
         # Rain has not started yet - we don't know when T is
         # Be optimistic and assume we have plenty of time to explore
