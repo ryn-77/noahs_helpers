@@ -66,57 +66,6 @@ class Player3(Player):
 
         return msg
 
-    def check_for_duplicate_species_pairs(self) -> set[int]:
-        """
-        Check if another helper with lower ID has the same species pair.
-        Returns set of all species_ids that should be released, or empty set if none.
-
-        Logic: If both helpers have 2 animals of the same species, those animals
-        MUST be opposite genders (M+F pair). The helper with higher ID releases both.
-        """
-        my_species_count = {}
-        for animal in self.flock:
-            my_species_count[animal.species_id] = (
-                my_species_count.get(animal.species_id, 0) + 1
-            )
-
-        my_species_pairs = {
-            species_id for species_id, count in my_species_count.items() if count == 2
-        }
-
-        if not my_species_pairs:
-            return set()
-
-        all_duplicate_pairs = set()
-
-        for cellview in self.sight:
-            other_helpers = [
-                helper
-                for helper in cellview.helpers
-                if helper.id != self.id and helper.id < self.id
-            ]
-
-            if not other_helpers or not cellview.animals:
-                continue
-
-            cell_species_count = {}
-            for animal in cellview.animals:
-                cell_species_count[animal.species_id] = (
-                    cell_species_count.get(animal.species_id, 0) + 1
-                )
-
-            other_helper_pairs = {
-                species_id
-                for species_id, count in cell_species_count.items()
-                if count == 2
-            }
-
-            duplicate_pairs = my_species_pairs.intersection(other_helper_pairs)
-
-            all_duplicate_pairs.update(duplicate_pairs)
-
-        return all_duplicate_pairs
-
     def get_action(self, messages: list[Message]) -> Action | None:
         for msg in messages:
             if 1 << (msg.from_helper.id % 8) == msg.contents:
@@ -124,21 +73,6 @@ class Player3(Player):
         # noah shouldn't do anything
         if self.kind == Kind.Noah:
             return None
-
-        duplicate_species_to_release = self.check_for_duplicate_species_pairs()
-        if duplicate_species_to_release:
-            for animal in self.flock:
-                if animal.species_id in duplicate_species_to_release:
-                    # print(
-                    #     f"Helper {self.id}: Releasing duplicate species {animal.species_id} - lower ID helper will deliver"
-                    # )
-
-                    # Add both genders of this species to ark memory
-                    # since we know the lower-ID helper WILL deliver them
-                    self.ark_species.add(Animal(animal.species_id, Gender.Male))
-                    self.ark_species.add(Animal(animal.species_id, Gender.Female))
-
-                    return Release(animal)
 
         # If it's raining, go to ark
         if self.is_raining:
@@ -196,8 +130,8 @@ class Player3(Player):
         free_animals = self.get_free_animals_in_cell(cellview)
         if len(free_animals) > 0:
             animal_to_obtain = choice(tuple(free_animals))
-            # print(f"Helper {self.id}: Obtained animal into flock")
-            # print(f"Helper {self.id}: New flock size: {len(self.flock) + 1}")
+            print(f"Helper {self.id}: Obtained animal into flock")
+            print(f"Helper {self.id}: New flock size: {len(self.flock) + 1}")
             return Obtain(animal_to_obtain)
 
         # If I see any animals, I'll chase the closest one
@@ -213,7 +147,7 @@ class Player3(Player):
         return Move(*self.move_dir())
 
     def get_distance(self, from_x, from_y, to_x, to_y):
-        # print(math.sqrt((to_x - from_x) ** 2 + (to_y - from_y) ** 2))
+        print(math.sqrt((to_x - from_x) ** 2 + (to_y - from_y) ** 2))
         return math.sqrt((to_x - from_x) ** 2 + (to_y - from_y) ** 2)
 
     def _get_my_cell(self) -> CellView:
@@ -239,14 +173,14 @@ class Player3(Player):
                     desirable_animals = []
                     for animal in cellview.animals:
                         if not self.should_pursue_animal(animal):  # type: ignore
-                            # print(
-                            #     f"Helper {self.id} not pursuing animal {animal.species_id} as both genders are already in ark."
-                            # )
+                            print(
+                                f"Not pursuing animal {animal.species_id} as both genders are already in ark."
+                            )
                             continue
                         if animal.species_id in cur_flock_animal_types:
-                            # print(
-                            #     f"{self.id} not pursuing animal {animal.species_id} as it's already in flock."
-                            # )
+                            print(
+                                f"Not pursuing animal {animal.species_id} as it's already in flock."
+                            )
                             continue
                         # print(f"Helper {self.id}: Considering animal {animal.species_id} at cell ({cellview.x}, {cellview.y})")
                         desirable_animals.append(animal)
@@ -267,7 +201,9 @@ class Player3(Player):
             y0 + step_size * math.sin(self.angle),
         )
         if self.can_move_to(x1, y1):
+            # print(x1, y1)
             return x1, y1
+        # print("move away")
         self.angle = math.radians(random() * 360)
         return x0, y0
 
@@ -323,8 +259,8 @@ class Player3(Player):
             if animal not in self.ark_species and animal not in self.flock:
                 if animal.species_id not in self.cooldowns:
                     free_animals.add(animal)
-                # else:
-                # print(f"Animal {animal.species_id} skipped: on cooldown.")
+                else:
+                    print(f"Animal {animal.species_id} skipped: on cooldown.")
 
         return free_animals
 
@@ -350,7 +286,7 @@ class Player3(Player):
         ) in ark_animals_with_gender:
             return False  # Both
         if animal.species_id in self.cooldowns:
-            # (f"Animal {animal.species_id} skipped: on cooldown.")
+            print(f"Animal {animal.species_id} skipped: on cooldown.")
             return False  # On cooldown
         return True
 
@@ -407,6 +343,9 @@ class Player3(Player):
         if self.kind == Kind.Noah:
             return -100
         k = self.id - 1
+        print(k)
         target = total_weight * ((float(k) + 0.5) / float(self.num_helpers - 1))
+        print(target)
         theta = self.find_angle_for_target(samples, target)
+        print(theta)
         return theta
