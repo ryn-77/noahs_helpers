@@ -662,7 +662,6 @@ class Player1(Player):
 
             return Move(tx, ty)
 
-
         # Otherwise: search for best animal
         best_animal = self._find_best_animal()
         print(f"{self.id} best animal: {best_animal}")
