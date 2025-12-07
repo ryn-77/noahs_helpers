@@ -1,4 +1,4 @@
-from random import choice
+from random import uniform
 from math import cos, sin, pi, atan2, sqrt
 
 import core.constants as c
@@ -17,6 +17,11 @@ POSITION_GENERATION_ATTEMPTS = 100
 class SectorManager:
     """Manages sector calculation and position generation for helpers."""
 
+    # Cache of equal-area sector boundaries so that for a given configuration
+    # (ark position, number of helpers) we only perform the expensive
+    # numerical integration once, even if there are many helpers.
+    _boundaries_cache: dict[tuple[int, int, int], list[float]] = {}
+
     def __init__(
         self,
         ark_position: tuple[int, int],
@@ -34,8 +39,16 @@ class SectorManager:
 
         self._initialize_sector()
 
-        # Cache for sector cells
+        # Cache for sector cells (per-helper instance cache)
         self._sector_cells: list[tuple[int, int]] | None = None
+
+        # Class-level cache: same sector boundaries = same cells
+        # Key: (sector_start_angle, sector_end_angle, ark_x, ark_y)
+        # This allows helpers with identical sectors to share the cell list
+        if not hasattr(SectorManager, "_sector_cells_cache"):
+            SectorManager._sector_cells_cache: dict[
+                tuple[float, float, int, int], list[tuple[int, int]]
+            ] = {}
 
     def _max_radius_at_angle(self, angle: float, radius: float | None = None) -> float:
         """Calculate the maximum radius at a given angle such that the point stays within grid bounds."""
@@ -126,6 +139,14 @@ class SectorManager:
         if num_sectors == 0:
             return [0, 2 * pi]
 
+        # Use a class-level cache keyed by (num_sectors, ark_x, ark_y) so that
+        # for a given map/ark configuration we only pay the integration cost
+        # once, regardless of how many helpers we have.
+        ark_x, ark_y = self.ark_position
+        cache_key = (num_sectors, int(ark_x), int(ark_y))
+        if cache_key in SectorManager._boundaries_cache:
+            return SectorManager._boundaries_cache[cache_key]
+
         total_area = self._calculate_sector_area(0, 2 * pi, radius)
         target_area_per_sector = total_area / num_sectors
 
@@ -170,6 +191,7 @@ class SectorManager:
         else:
             boundaries[-1] = 2 * pi
 
+        SectorManager._boundaries_cache[cache_key] = boundaries
         return boundaries
 
     def _initialize_sector(self):
@@ -205,7 +227,17 @@ class SectorManager:
         overlap = sector_span * SECTOR_OVERLAP_PERCENT
 
         self.sector_start_angle = (start_angle - overlap) % (2 * pi)
-        self.sector_end_angle = (end_angle + overlap) % (2 * pi)
+        # Handle end_angle = 2*pi case don't mod it, keep it as 2*pi
+        if abs(end_angle - 2 * pi) < 0.0001:
+            self.sector_end_angle = 2 * pi
+        else:
+            self.sector_end_angle = (end_angle + overlap) % (2 * pi)
+            # If mod wrapped around to 0, it means we went past 2*pi, so set to 2*pi
+            if (
+                self.sector_end_angle < self.sector_start_angle
+                and abs(self.sector_end_angle) < 0.0001
+            ):
+                self.sector_end_angle = 2 * pi
 
     def is_in_sector(self, x: float, y: float) -> bool:
         """Check if a point is in this helper's sector."""
@@ -222,12 +254,29 @@ class SectorManager:
             return self.sector_start_angle <= angle <= self.sector_end_angle
 
     def _get_all_cells_in_sector(self) -> list[tuple[int, int]]:
-        """Get a list of all cell coordinates in the sector."""
+        """
+        Get a list of all cell coordinates in the sector.
+        Uses class-level caching so helpers with identical sectors share the same cell list.
+        """
+        # Check instance cache first
         if self._sector_cells is not None:
             return self._sector_cells
 
-        cells: list[tuple[int, int]] = []
+        # Check class-level cache (helpers with same sector share the list)
         ark_x, ark_y = self.ark_position
+        cache_key = (
+            round(self.sector_start_angle, 6),
+            round(self.sector_end_angle, 6),
+            ark_x,
+            ark_y,
+        )
+
+        if cache_key in SectorManager._sector_cells_cache:
+            self._sector_cells = SectorManager._sector_cells_cache[cache_key]
+            return self._sector_cells
+
+        # Compute cells (expensive - only done once per unique sector)
+        cells: list[tuple[int, int]] = []
 
         # Calculate bounds for cells within max_search_radius
         max_radius_int = int(MAX_SEARCH_RADIUS) + 1
@@ -236,30 +285,38 @@ class SectorManager:
         min_y = max(0, ark_y - max_radius_int)
         max_y = min(c.Y - 1, ark_y + max_radius_int)
 
-        # Check each cell
+        # Pre-compute squared radius to avoid sqrt in loop
+        max_radius_sq = MAX_SEARCH_RADIUS * MAX_SEARCH_RADIUS
+
+        # Check each cell - optimized with early distance check
         for x in range(min_x, max_x + 1):
             for y in range(min_y, max_y + 1):
-                # Check if cell center is within max_search_radius
+                # Fast distance check using squared distance (avoid sqrt)
                 cell_center_x = x + 0.5
                 cell_center_y = y + 0.5
                 dx = cell_center_x - ark_x
                 dy = cell_center_y - ark_y
-                dist = sqrt(dx * dx + dy * dy)
+                dist_sq = dx * dx + dy * dy
 
-                if dist <= MAX_SEARCH_RADIUS and self.is_in_sector(
-                    cell_center_x, cell_center_y
-                ):
+                # Early exit if outside radius
+                if dist_sq > max_radius_sq:
+                    continue
+
+                # Only check sector if within radius
+                if self.is_in_sector(cell_center_x, cell_center_y):
                     cells.append((x, y))
 
+        # Cache at both instance and class level
         self._sector_cells = cells
+        SectorManager._sector_cells_cache[cache_key] = cells
         return cells
 
     def get_random_position_in_sector(
         self, visited_cells: set[tuple[int, int]] | None = None
     ) -> tuple[float, float]:
         """
-        Generate a random position within sector by selecting a random unvisited cell.
-        Returns the center of the selected cell.
+        Generate a random position within sector using polar sampling (much faster than
+        scanning all cells). Returns the center of a cell.
 
         Args:
             visited_cells: Set of (x, y) tuples representing visited cell coordinates.
@@ -271,25 +328,47 @@ class SectorManager:
         if visited_cells is None:
             visited_cells = set()
 
-        # Get all cells in sector
-        sector_cells = self._get_all_cells_in_sector()
+        ark_x, ark_y = self.ark_position
 
-        if not sector_cells:
-            # Fallback: return ark position
-            return (
-                float(self.ark_position[0]) + 0.5,
-                float(self.ark_position[1]) + 0.5,
-            )
+        # Use polar sampling instead of scanning all cells - much faster!
+        # Sample random angle within sector and random radius
+        for attempt in range(POSITION_GENERATION_ATTEMPTS):
+            # Sample angle uniformly within sector
+            if self.sector_start_angle < self.sector_end_angle:
+                angle = uniform(self.sector_start_angle, self.sector_end_angle)
+            else:
+                # Sector wraps around 0
+                span = (2 * pi - self.sector_start_angle) + self.sector_end_angle
+                rand = uniform(0, span)
+                if rand < (2 * pi - self.sector_start_angle):
+                    angle = self.sector_start_angle + rand
+                else:
+                    angle = rand - (2 * pi - self.sector_start_angle)
 
-        # Filter out visited cells
-        unvisited_cells = [cell for cell in sector_cells if cell not in visited_cells]
+            # Sample radius (use sqrt for uniform distribution in area)
+            max_r = min(MAX_SEARCH_RADIUS, self._max_radius_at_angle(angle))
+            if max_r <= 0:
+                continue
+            r = sqrt(uniform(0, max_r * max_r))  # sqrt for uniform area distribution
 
-        # If all cells are visited, use all cells
-        if not unvisited_cells:
-            unvisited_cells = sector_cells
+            # Convert to cartesian
+            x = ark_x + r * cos(angle)
+            y = ark_y + r * sin(angle)
 
-        # Select random cell
-        selected_cell = choice(unvisited_cells)
+            # Clamp to grid bounds
+            xcell = max(0, min(c.X - 1, int(x)))
+            ycell = max(0, min(c.Y - 1, int(y)))
 
-        # Return center of cell
-        return (float(selected_cell[0]) + 0.5, float(selected_cell[1]) + 0.5)
+            # Check if visited
+            if (xcell, ycell) in visited_cells:
+                continue
+
+            # Verify it's actually in sector (handles edge cases)
+            if self.is_in_sector(float(xcell) + 0.5, float(ycell) + 0.5):
+                return (float(xcell) + 0.5, float(ycell) + 0.5)
+
+        # Fallback: return ark position if we couldn't find a valid position
+        return (
+            float(self.ark_position[0]) + 0.5,
+            float(self.ark_position[1]) + 0.5,
+        )

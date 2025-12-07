@@ -4,16 +4,22 @@ Script to test how many unique cells each helper visits on average across multip
 Uses t1.json config and runs for 2016 turns.
 """
 
+import sys
 import random
 import pathlib
 import argparse
 from collections import defaultdict
 from typing import Dict, Set
 
-from core.runner import ArkRunner
-from core.args import MapArgs, PLAYERS
-from core.engine import Engine
-from core.views.player_view import Kind
+# Add parent directories to path to import modules
+script_dir = pathlib.Path(__file__).parent
+project_root = script_dir.parent.parent
+sys.path.insert(0, str(project_root))
+
+from core.runner import ArkRunner  # noqa: E402
+from core.args import MapArgs, PLAYERS  # noqa: E402
+from core.engine import Engine  # noqa: E402
+from core.views.player_view import Kind  # noqa: E402
 
 
 def load_map_config(map_path: str) -> MapArgs:

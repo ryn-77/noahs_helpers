@@ -1,5 +1,5 @@
 from random import random
-from math import cos, sin, pi, atan2
+from math import cos, sin, pi, atan2, log
 
 from core.action import Action, Move, Obtain, Release
 from core.message import Message
@@ -34,14 +34,16 @@ RAIN_AGGRESSIVE_SWEEP_STEP_MULTIPLIER = (
     1.5  # Increase step size during rain when time allows
 )
 RAIN_AGGRESSIVE_SWEEP_THRESHOLD = 500  # Use aggressive step when rain_countdown > this
-PRE_RAIN_AGGRESSIVE_SWEEP_TURN = 1500  # Start aggressive exploration when turn > this
-PRE_RAIN_SWEEP_STEP_MULTIPLIER = 1.3  # Increase step size pre-rain when time allows
+PRE_RAIN_AGGRESSIVE_SWEEP_TURN = 750  # Start aggressive exploration earlier
+PRE_RAIN_SWEEP_STEP_MULTIPLIER = (
+    1.5  # Increase step size more aggressively to push outward
+)
 COVERAGE_PRIORITY_TURN = 1000  # Start prioritizing unvisited cells after this turn
 EDGE_DISTANCE_THRESHOLD = 50  # Cells within this distance of map edge are "edge cells"
 REVISIT_COOLDOWN_TURNS = 600
 RANDOM_TARGET_PROBABILITY = 0.5
 COVERAGE_RANDOM_PROBABILITY = (
-    0.7  # Higher random probability when prioritizing coverage
+    0.35  # Probability of using coverage priority (lower = faster, less aggressive)
 )
 
 
@@ -78,14 +80,15 @@ class Player8(Player):
         self.visited_cells: set[tuple[int, int]] = set()
         # Track last seen turn for cooldown-based revisit avoidance
         self.last_seen: dict[tuple[int, int], int] = {}
-        # Polar sweep state
-        self._sweep_ring_index: int = 1  # start just outside the ark cell
+        # Polar sweep state - start at ring 1, but will expand quickly
+        self._sweep_ring_index: int = 1  # Start close, but expand aggressively
         self._sweep_points_in_ring: int = 8
         self._sweep_angle_index: int = 0
         self._reset_sweep_ring()
         self._route_waypoints: list[tuple[float, float]] = []
         self._target_was_random: bool = False
-        self._set_next_target()
+        # Defer target setting to avoid expensive initialization
+        self.target_position: tuple[float, float] | None = None
 
         # Internal ark state tracking: {species_id: (has_male, has_female)}
         self.ark_state: dict[int, tuple[bool, bool]] = {}
@@ -100,6 +103,10 @@ class Player8(Player):
 
         # State for handling rare animal pickup when flock is full
         self.pending_obtain: Animal | None = None
+
+        # Cache for recently_seen_set to avoid recomputing multiple times per turn
+        self._cached_recently_seen: set[tuple[int, int]] | None = None
+        self._cached_recently_seen_turn: int = -1
 
     # Ark state tracking and messaging
 
@@ -247,6 +254,15 @@ class Player8(Player):
                     return True
         return False
 
+    def _has_opposite_gender_already(self, animal: Animal) -> bool:
+        """Check if the opposite gender is already in ark or flock, meaning this gender should be prioritized."""
+        if self._species_has_both_genders_in_ark(animal.species_id):
+            return False
+
+        return self._has_opposite_gender_in_ark(
+            animal
+        ) or self._has_opposite_gender_in_flock(animal)
+
     def _is_animal_no_longer_needed(self, animal: Animal) -> bool:
         """Check if an animal is no longer needed based on current ark state."""
         sid = animal.species_id
@@ -296,40 +312,52 @@ class Player8(Player):
         """Calculate probability of picking up an animal."""
         sid = animal.species_id
 
-        # Base probability: inverse of population
-        pop = self.species_populations.get(str(sid), 1)
-        base_prob = 1.0 / (pop + 1) + BASE_PICKUP_PROBABILITY_BOOST
-
-        # Check if already complete in ark
         if self._species_has_both_genders_in_ark(sid):
             return 0.0
 
-        # Check if already in flock (same gender)
         for flock_animal in self.flock:
             if flock_animal.species_id == sid and flock_animal.gender == animal.gender:
                 return 0.0
 
-        # Check if opposite gender exists
-        if self._has_opposite_gender_in_ark(animal):
-            return base_prob * OPPOSITE_GENDER_IN_ARK_MULTIPLIER
-        if self._has_opposite_gender_in_flock(animal):
-            return base_prob * OPPOSITE_GENDER_IN_FLOCK_MULTIPLIER
+        if self._has_opposite_gender_already(animal):
+            return 100.0
+
+        num_species = len(self.species_populations)
+        if self.num_helpers < num_species:
+            base_prob = 100.0
+        else:
+            pop = self.species_populations.get(str(sid), 1)
+
+            if pop <= 1:
+                normalized = 1.0
+            else:
+                log_min = log(2.0)
+                log_max = log(100.0)
+                log_pop = log(pop)
+                normalized = 1.0 - (log_pop - log_min) / (log_max - log_min)
+                normalized = max(0.0, min(1.0, normalized))
+
+            base_prob = 0.75 + 0.24 * normalized
+            base_prob = base_prob * 100.0
 
         return base_prob
 
     def _is_animal_much_rarer(self, animal: Animal) -> bool:
-        """Check if an animal is much rarer than animals in current flock."""
+        """Check if an animal is much rarer than animals in current flock, based on probability."""
         if len(self.flock) == 0:
             return True
 
         animal_pop = self.species_populations.get(str(animal.species_id), 1)
-
         min_flock_pop = min(
             self.species_populations.get(str(flock_animal.species_id), 1)
             for flock_animal in self.flock
         )
 
-        return animal_pop < min_flock_pop / MIN_RARITY_FACTOR
+        if animal_pop >= min_flock_pop / MIN_RARITY_FACTOR:
+            return False
+
+        prob = self._calculate_pickup_probability(animal)
+        return random() < (prob / 100.0)
 
     def _has_other_helpers_in_cell(self, cellview: CellView) -> bool:
         """Check if there are other helpers in this cell."""
@@ -411,6 +439,8 @@ class Player8(Player):
 
     def _has_reached_target(self) -> bool:
         """Check if the player has reached the target position."""
+        if self.target_position is None:
+            return False
         dist = distance(*self.position, *self.target_position)
         return dist <= TARGET_REACHED_DELTA
 
@@ -441,9 +471,21 @@ class Player8(Player):
         self._sweep_angle_index = 0
 
     def _recently_seen_set(self) -> set[tuple[int, int]]:
-        """Cells seen within the cooldown window."""
+        """Cells seen within the cooldown window. Cached per turn to avoid expensive recomputation."""
+        # Return cached value if it's for the current turn
+        if (
+            self._cached_recently_seen is not None
+            and self._cached_recently_seen_turn == self.current_turn
+        ):
+            return self._cached_recently_seen
+
+        # Compute and cache
         cutoff = self.current_turn - REVISIT_COOLDOWN_TURNS
-        return {cell for cell, t in self.last_seen.items() if t > cutoff}
+        self._cached_recently_seen = {
+            cell for cell, t in self.last_seen.items() if t > cutoff
+        }
+        self._cached_recently_seen_turn = self.current_turn
+        return self._cached_recently_seen
 
     def _is_edge_cell(self, x: int, y: int) -> bool:
         """Check if a cell is near the map edge (corner/edge area)."""
@@ -455,49 +497,75 @@ class Player8(Player):
         )
 
     def _get_unvisited_cells_in_sector(self) -> list[tuple[int, int]]:
-        """Get unvisited cells in this helper's sector, prioritizing edge/corner cells."""
-        sector_cells = self.sector_manager._get_all_cells_in_sector()
-        unvisited = [
-            cell
-            for cell in sector_cells
-            if cell not in self.visited_cells and cell not in self._recently_seen_set()
-        ]
+        """
+        Get unvisited cells in this helper's sector using fast sampling.
+        Avoids expensive full-grid scan by sampling random positions.
+        """
+        recently_seen = self._recently_seen_set()
+        ark_x, ark_y = self.ark_position
 
-        # Prioritize edge/corner cells
-        edge_cells = [
-            cell for cell in unvisited if self._is_edge_cell(cell[0], cell[1])
+        # Use fast polar sampling instead of scanning all cells
+        # Sample up to 200 candidate positions
+        candidates: list[tuple[int, int]] = []
+        max_samples = 200
+
+        for _ in range(max_samples * 2):  # Try more to account for visited cells
+            if len(candidates) >= max_samples:
+                break
+
+            # Sample random position in sector using polar coordinates
+            pos = self.sector_manager.get_random_position_in_sector(recently_seen)
+            xcell = int(pos[0])
+            ycell = int(pos[1])
+            cell = (xcell, ycell)
+
+            # Check if unvisited
+            if cell not in self.visited_cells and cell not in recently_seen:
+                if cell not in candidates:
+                    candidates.append(cell)
+
+        if len(candidates) == 0:
+            return []
+
+        # Prioritize cells FAR from ark (push outward) and edge/corner cells
+        unvisited_with_rough_dist = [
+            (
+                cell,
+                abs(cell[0] - ark_x) + abs(cell[1] - ark_y),
+            )  # Manhattan distance (faster)
+            for cell in candidates
         ]
+        # Sort by distance (farthest first) - this pushes exploration outward
+        unvisited_with_rough_dist.sort(key=lambda x: -x[1])
+
+        # Take top 100 farthest cells, then separate edge/non-edge
+        top_far = [cell for cell, _ in unvisited_with_rough_dist[:100]]
+
+        edge_cells = [cell for cell in top_far if self._is_edge_cell(cell[0], cell[1])]
         non_edge_cells = [
-            cell for cell in unvisited if not self._is_edge_cell(cell[0], cell[1])
+            cell for cell in top_far if not self._is_edge_cell(cell[0], cell[1])
         ]
 
-        # Return edge cells first, then others
+        # Return edge cells first, then other far cells
         return edge_cells + non_edge_cells
 
     def _get_coverage_priority_target(self) -> tuple[float, float] | None:
         """Get a target from unvisited cells in sector, prioritizing coverage."""
+        # Use fast sampling - already optimized in _get_unvisited_cells_in_sector
         unvisited = self._get_unvisited_cells_in_sector()
         if not unvisited:
             return None
 
-        # Prefer cells that are far from ark (explore outward)
-        unvisited_with_dist = [
-            (cell, distance(cell[0] + 0.5, cell[1] + 0.5, *self.ark_position))
-            for cell in unvisited
-        ]
-        # Sort by distance (farther = higher priority) but also consider edge priority
-        unvisited_with_dist.sort(
-            key=lambda x: (
-                0 if self._is_edge_cell(x[0][0], x[0][1]) else 1,  # Edge cells first
-                -x[1],  # Then by distance (negative for descending)
-            )
-        )
+        # Simple selection: prefer edge cells, then pick from top candidates
+        edge_candidates = [c for c in unvisited if self._is_edge_cell(c[0], c[1])]
+        if edge_candidates:
+            # Pick random from edge cells (already sorted by distance)
+            cell = edge_candidates[int(random() * min(10, len(edge_candidates)))]
+            return (float(cell[0]) + 0.5, float(cell[1]) + 0.5)
 
-        # Pick from top candidates (top 20% or at least top 5)
-        top_n = max(5, len(unvisited_with_dist) // 5)
-        selected = unvisited_with_dist[:top_n]
-        if selected:
-            cell, _ = selected[int(random() * len(selected))]
+        # Fallback: pick from non-edge
+        if unvisited:
+            cell = unvisited[int(random() * min(10, len(unvisited)))]
             return (float(cell[0]) + 0.5, float(cell[1]) + 0.5)
 
         return None
@@ -507,6 +575,28 @@ class Player8(Player):
         recently_seen = self._recently_seen_set()
         pos = self.sector_manager.get_random_position_in_sector(recently_seen)
 
+        # If we got the ark position as fallback, force a nearby target
+        if pos == (float(self.ark_position[0]), float(self.ark_position[1])):
+            # Force a target a few km away to get helper moving
+            ark_x, ark_y = self.ark_position
+            for attempt in range(20):
+                angle = random() * 2 * pi
+                r = 3.0 + (attempt * 1.0)  # Start at 3km, increase each attempt
+                x = ark_x + r * cos(angle)
+                y = ark_y + r * sin(angle)
+                xcell = int(x)
+                ycell = int(y)
+                if 0 <= xcell < c.X and 0 <= ycell < c.Y:
+                    # Check if in sector (or if sector is full circle, accept it)
+                    if self.sector_manager.is_in_sector(x + 0.5, y + 0.5):
+                        return (float(xcell) + 0.5, float(ycell) + 0.5)
+            # Last resort: return a cell 5km away in a random direction
+            angle = random() * 2 * pi
+            x = ark_x + 5.0 * cos(angle)
+            y = ark_y + 5.0 * sin(angle)
+            xcell = max(0, min(c.X - 1, int(x)))
+            ycell = max(0, min(c.Y - 1, int(y)))
+            return (float(xcell) + 0.5, float(ycell) + 0.5)
         # When raining, avoid selecting cells that would not allow a safe return.
         if not self.is_raining or self.rain_countdown is None:
             return pos
@@ -534,7 +624,7 @@ class Player8(Player):
         Generate the next sweep target using polar 'lawnmower' rings.
         Returns the center of an in-bounds cell within this helper's sector.
         """
-        max_attempts = 5000
+        max_attempts = 200  # Reduced from 5000 to avoid long delays
         attempts = 0
         step = self._effective_sweep_ring_step()
         while attempts < max_attempts:
@@ -569,9 +659,41 @@ class Player8(Player):
             # Cooldown: skip if recently seen
             if (xcell, ycell) in self._recently_seen_set():
                 continue
+            # Don't return the ark position itself
+            if (cx, cy) == (
+                float(self.ark_position[0]) + 0.5,
+                float(self.ark_position[1]) + 0.5,
+            ):
+                continue
             return (cx, cy)
         # Fallback to random (cooldown-aware) if we couldn't find a sweep target
-        return self._get_random_target()
+        fallback_target = self._get_random_target()
+        # If random also fails and returns ark, try a simple nearby target
+        if fallback_target == (
+            float(self.ark_position[0]),
+            float(self.ark_position[1]),
+        ):
+            # Force a nearby target to get helper moving
+            ark_x, ark_y = self.ark_position
+            # Try a cell a few km away in a random direction
+            for attempt in range(20):
+                angle = random() * 2 * pi
+                r = 3.0 + (attempt * 1.0)  # Start at 3km, increase each attempt
+                x = ark_x + r * cos(angle)
+                y = ark_y + r * sin(angle)
+                xcell = int(x)
+                ycell = int(y)
+                if 0 <= xcell < c.X and 0 <= ycell < c.Y:
+                    if self.sector_manager.is_in_sector(x + 0.5, y + 0.5):
+                        return (float(xcell) + 0.5, float(ycell) + 0.5)
+            # Last resort: return a cell 5km away (ignore sector check)
+            angle = random() * 2 * pi
+            x = ark_x + 5.0 * cos(angle)
+            y = ark_y + 5.0 * sin(angle)
+            xcell = max(0, min(c.X - 1, int(x)))
+            ycell = max(0, min(c.Y - 1, int(y)))
+            return (float(xcell) + 0.5, float(ycell) + 0.5)
+        return fallback_target
 
     def _choose_next_target(self) -> tuple[float, float]:
         """Mix between sweep and random targets to balance coverage and exploration."""
@@ -580,10 +702,17 @@ class Player8(Player):
             return self._get_next_sweep_target()
 
         # When there's time and we want better coverage, prioritize unvisited cells
+        # Skip if timer shows we're running low on time (expensive operation)
+        timer_ok = (
+            not hasattr(self, "_current_timer")
+            or self._current_timer is None
+            or self._current_timer.consumed < 0.001  # Less than 1ms consumed so far
+        )
         if (
             not self.is_raining
             and self.current_turn > COVERAGE_PRIORITY_TURN
             and random() < COVERAGE_RANDOM_PROBABILITY
+            and timer_ok  # Only do expensive coverage if we have time
         ):
             coverage_target = self._get_coverage_priority_target()
             if coverage_target is not None:
@@ -673,6 +802,22 @@ class Player8(Player):
     def _set_next_target(self):
         """Pick and set the next target, and build a sweep route if appropriate."""
         next_target = self._choose_next_target()
+        # Ensure target is not at or too close to ark (at least 2km away)
+        dist_to_target = distance(*next_target, *self.ark_position)
+        if dist_to_target < 2.0:
+            # Force a target at least 3km away
+            ark_x, ark_y = self.ark_position
+            for attempt in range(20):
+                angle = random() * 2 * pi
+                r = 3.0 + (attempt * 0.5)
+                x = ark_x + r * cos(angle)
+                y = ark_y + r * sin(angle)
+                xcell = max(0, min(c.X - 1, int(x)))
+                ycell = max(0, min(c.Y - 1, int(y)))
+                candidate = (float(xcell) + 0.5, float(ycell) + 0.5)
+                if self.sector_manager.is_in_sector(candidate[0], candidate[1]):
+                    next_target = candidate
+                    break
         self.target_position = next_target
         # Build waypoints only for random targets to add sweeping motion en route
         if self._target_was_random:
@@ -708,6 +853,9 @@ class Player8(Player):
         self.is_raining = snapshot.is_raining
         self.current_turn = snapshot.time_elapsed
 
+        # Store timer to check in get_action for expensive operations
+        self._current_timer = snapshot.timer
+
         # Check if flock size increased (animal was added)
         current_flock_size = len(self.flock)
         if current_flock_size > self.prev_flock_size:
@@ -722,6 +870,10 @@ class Player8(Player):
             for cellview in self.sight:
                 self.visited_cells.add((cellview.x, cellview.y))
                 self.last_seen[(cellview.x, cellview.y)] = self.current_turn
+
+        # Invalidate recently_seen cache since turn changed
+        self._cached_recently_seen = None
+        self._cached_recently_seen_turn = -1
 
         # Update ark state if at ark
         if snapshot.ark_view is not None:
@@ -796,6 +948,11 @@ class Player8(Player):
         elif self._has_reached_target():
             self._set_next_target()
 
+    def _ensure_target_set(self):
+        """Ensure target is set (lazy initialization)."""
+        if self.target_position is None:
+            self._set_next_target()
+
     def get_action(self, messages: list[Message]) -> Action | None:
         """Get next action based on current state and messages."""
         # Decode messages and update ark state
@@ -821,6 +978,9 @@ class Player8(Player):
             if animal_to_release is not None:
                 return Release(animal_to_release)
 
+        # Ensure target is set (lazy initialization)
+        self._ensure_target_set()
+
         # Update target if needed
         self._update_target_if_needed()
 
@@ -843,5 +1003,6 @@ class Player8(Player):
         if best_animal:
             return Move(*self.move_towards(*best_animal))
 
-        # Move towards the sector target position
+        # Move towards the sector target position (guaranteed to be set by _ensure_target_set)
+        assert self.target_position is not None, "Target position should be set"
         return Move(*self.move_towards(*self.target_position))
